@@ -1,0 +1,268 @@
+package com.elsevier.dp.person.kafka.impl;
+
+import com.elsevier.dp.person.constants.kafka.HeaderConstants;
+import com.elsevier.dp.person.constants.matcher.MatcherType;
+import com.elsevier.dp.person.exception.PersonOccurrenceMatchInvalidException;
+import com.elsevier.dp.person.kafka.PersonOccurrenceMatchedDLT;
+import com.elsevier.dp.person.kafka.utlis.AvroConverter;
+import com.elsevier.dp.person.model.EventWrapper;
+import com.elsevier.dp.person.occurrenceMatched.PersonOccurrenceMatchedRecord;
+import com.elsevier.dp.person.service.EventProcessingService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.newrelic.api.agent.NewRelic;
+import io.confluent.parallelconsumer.ParallelStreamProcessor;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.commons.lang3.math.NumberUtils;
+import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.common.header.Header;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.retry.annotation.EnableRetry;
+
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
+
+import static com.elsevier.dp.person.constants.kafka.HeaderConstants.*;
+import static com.elsevier.dp.person.model.NewRelicConstants.*;
+
+@Slf4j
+@Configuration
+@ComponentScan(basePackages = "com.elsevier.dp.person.kafka.impl")
+@EnableRetry
+public class OccurrenceMatchedParallelConsumer {
+
+    private final String topic;
+
+    private final ObjectMapper objectMapper;
+    private final EventProcessingService eventProcessingService;
+    private final PersonOccurrenceMatchedDLT personOccurrenceMatchedDLT;
+
+    @Autowired
+    public OccurrenceMatchedParallelConsumer(
+            @Value("${spring.kafka.topic}") String topic,
+            ObjectMapper objectMapper,
+            EventProcessingService eventProcessingService,
+            PersonOccurrenceMatchedDLT personOccurrenceMatchedDLT) {
+        this.topic = topic;
+        this.objectMapper = objectMapper;
+        this.eventProcessingService = eventProcessingService;
+        this.personOccurrenceMatchedDLT = personOccurrenceMatchedDLT;
+    }
+
+    @Bean
+    public ApplicationRunner parallelRunner(
+            @Qualifier("parallelStreamProcessor")
+                    ParallelStreamProcessor<String, GenericRecord> parallelStreamProcessor,
+            @Qualifier("consumerRebalanceListener") ConsumerRebalanceListener consumerRebalanceListener) {
+        return args -> {
+            parallelStreamProcessor.subscribe(List.of(topic), consumerRebalanceListener);
+            parallelStreamProcessor.poll(context -> {
+                ConsumerRecord<String, GenericRecord> record = context.getSingleConsumerRecord();
+                EventWrapper wrapper = null;
+                try {
+                    wrapper = parseAndProcessEvent(record);
+                    log.info(
+                            "Processed record for txId={}, personOccurrenceId={}, exhibitId={}",
+                            wrapper.transactionId(),
+                            wrapper.personOccurrenceId(),
+                            wrapper.exhibitId());
+                } catch (Exception e) {
+                    log.error("Failed to process record with key {}", record.key(), e);
+                    // Report the exception to New Relic with error details
+                    Map<String, Object> eventAttributes = new HashMap<>();
+                    eventAttributes.put(COMPONENT_NAME, LISTENER);
+                    eventAttributes.put(ERROR_COUNT, 1);
+                    NewRelic.getAgent().getInsights().recordCustomEvent(REGISTRY_EVENT_ERROR_COUNT, eventAttributes);
+
+                    // TODO: Failed event should be moved to DLT
+                    personOccurrenceMatchedDLT.sendToDLT(record);
+                }
+            });
+        };
+    }
+
+   
+}
+
+
+
+===================================================================================================================================
+
+
+package com.elsevier.dp.person.config;
+
+import io.confluent.kafka.serializers.KafkaAvroDeserializer;
+import io.confluent.kafka.serializers.KafkaAvroDeserializerConfig;
+import io.confluent.parallelconsumer.ParallelConsumerOptions;
+import io.confluent.parallelconsumer.ParallelStreamProcessor;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.io.EncoderFactory;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.config.SaslConfigs;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.annotation.EnableKafka;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.listener.ContainerProperties;
+
+import java.time.Duration;
+import java.util.*;
+
+import static io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG;
+
+@Slf4j
+@EnableKafka
+@Configuration
+public class ConsumerConfiguration {
+
+    private final String bootstrapServers;
+    private final String schemaRegistryUrl;
+    private final String securityProtocol;
+    private final String saslJaasConfig;
+    private final String saslMechanism;
+    private final String basicAuthCredSource;
+    private final String schemaRegistryBasicAuthUserInfo;
+    private final String groupId;
+    private final String normalizedGroupId; // to be removed
+
+    public ConsumerConfiguration(
+            @Value("${spring.kafka.bootstrap-servers}") String bootstrapServers,
+            @Value("${spring.kafka.properties.schema.registry.url}") String schemaRegistryUrl,
+            @Value("${spring.kafka.properties.security.protocol}") String securityProtocol,
+            @Value("${spring.kafka.properties.sasl.jaas.config}") String saslJaasConfig,
+            @Value("${spring.kafka.properties.sasl.mechanism}") String saslMechanism,
+            @Value("${spring.kafka.properties.basic.auth.credentials.source}") String basicAuthCredSource,
+            @Value("${spring.kafka.properties.schema.registry.basic.auth.user.info}")
+                    String schemaRegistryBasicAuthUserInfo,
+            @Value("${spring.kafka.consumer.group-id}") String groupId,
+            //  normalizedGroupId to be removed
+            @Value("${spring.kafka.normalized.consumer.group-id}") String normalizedGroupId) {
+        this.bootstrapServers = bootstrapServers;
+        this.schemaRegistryUrl = schemaRegistryUrl;
+        this.securityProtocol = securityProtocol;
+        this.saslJaasConfig = saslJaasConfig;
+        this.saslMechanism = saslMechanism;
+        this.basicAuthCredSource = basicAuthCredSource;
+        this.schemaRegistryBasicAuthUserInfo = schemaRegistryBasicAuthUserInfo;
+        this.groupId = groupId;
+        this.normalizedGroupId = normalizedGroupId; // to be removed
+    }
+
+    @Bean(name = "parallelStreamProcessor")
+    public ParallelStreamProcessor<String, GenericRecord> parallelStreamProcessor() {
+        Properties props = new Properties();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaAvroDeserializer.class.getName());
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
+        props.put(SCHEMA_REGISTRY_URL_CONFIG, schemaRegistryUrl);
+        props.put("basic.auth.credentials.source", basicAuthCredSource);
+        props.put("basic.auth.user.info", schemaRegistryBasicAuthUserInfo);
+        props.put("security.protocol", securityProtocol);
+        props.put(SaslConfigs.SASL_MECHANISM, saslMechanism);
+        props.put(SaslConfigs.SASL_JAAS_CONFIG, saslJaasConfig);
+        props.put(KafkaAvroDeserializerConfig.SPECIFIC_AVRO_READER_CONFIG, "false"); // generic record mode
+
+        KafkaConsumer<String, GenericRecord> kafkaConsumer = new KafkaConsumer<>(props);
+
+        ParallelConsumerOptions<String, GenericRecord> options =
+                ParallelConsumerOptions.<String, GenericRecord>builder()
+                        .ordering(ParallelConsumerOptions.ProcessingOrder.UNORDERED)
+                        .maxConcurrency(10)
+                        .consumer(kafkaConsumer)
+                        .commitInterval(Duration.ofMillis(1000))
+                        .commitMode(ParallelConsumerOptions.CommitMode.PERIODIC_CONSUMER_ASYNCHRONOUS)
+                        .build();
+
+        return ParallelStreamProcessor.createEosStreamProcessor(options);
+    }
+
+    /**
+     * Listener for the partition assigned/revoked we use to reset the offsets to 0 if reset.beginning
+     * is true
+     *
+     * @return ConsumerRebalanceListener
+     */
+    @Bean
+    ConsumerRebalanceListener consumerRebalanceListener() {
+        return new ConsumerRebalanceListener() {
+            @Override
+            public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
+                log.info("Partitions revoked: {}", partitions);
+            }
+
+            @Override
+            public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
+                log.info("Partitions assigned: {}", partitions);
+                // optional: consumer.seekToBeginning(partitions); -- you can't do this without access to Consumer
+            }
+        };
+    }
+
+    /**
+     * Expose topic as a bean to be injected where needed.
+     */
+    @Bean
+    public List<String> topicList(@Value("${spring.kafka.topic}") String topic) {
+        return List.of(topic);
+    }
+
+    // to be removed starts
+    @Bean
+    public ConsumerFactory<String, GenericRecord> normalizedConsumerFactory() {
+        Map<String, Object> configProps = new HashMap<>();
+        configProps.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        configProps.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        configProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaAvroDeserializer.class.getName());
+        configProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        configProps.put(KafkaAvroDeserializerConfig.SPECIFIC_AVRO_READER_CONFIG, "true");
+        configProps.put(SCHEMA_REGISTRY_URL_CONFIG, schemaRegistryUrl);
+        configProps.put("security.protocol", securityProtocol);
+        configProps.put(SaslConfigs.SASL_JAAS_CONFIG, saslJaasConfig);
+        configProps.put(SaslConfigs.SASL_MECHANISM, saslMechanism);
+        configProps.put("basic.auth.credentials.source", basicAuthCredSource);
+        configProps.put("basic.auth.user.info", schemaRegistryBasicAuthUserInfo);
+        configProps.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+        configProps.put(ConsumerConfig.GROUP_ID_CONFIG, normalizedGroupId);
+        configProps.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 10000);
+
+        return new DefaultKafkaConsumerFactory<>(configProps);
+    }
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, GenericRecord> normalizedKafkaListenerContainerFactory(
+            ConsumerFactory<String, GenericRecord> consumerFactory) {
+        ConcurrentKafkaListenerContainerFactory<String, GenericRecord> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(consumerFactory);
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL);
+        return factory;
+    }
+
+    @Bean
+    public EncoderFactory encoderFactory() {
+        return EncoderFactory.get();
+    }
+    // to be removed end
+}
