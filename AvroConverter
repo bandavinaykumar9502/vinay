@@ -1,0 +1,53 @@
+//
+// Source code recreated from a .class file by IntelliJ IDEA
+// (powered by FernFlower decompiler)
+//
+
+package com.elsevier.dp.person.kafka.utlis;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import org.apache.avro.Schema;
+import org.apache.avro.generic.GenericData;
+import org.apache.avro.generic.GenericDatumWriter;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.io.BinaryDecoder;
+import org.apache.avro.io.BinaryEncoder;
+import org.apache.avro.io.Decoder;
+import org.apache.avro.io.DecoderFactory;
+import org.apache.avro.io.Encoder;
+import org.apache.avro.io.EncoderFactory;
+import org.apache.avro.specific.SpecificData;
+import org.apache.avro.specific.SpecificDatumReader;
+import org.apache.avro.specific.SpecificRecord;
+
+public class AvroConverter {
+    public static <T extends SpecificRecord> T convertGenericToSpecific(GenericRecord genericRecord, Class<T> specificClass) {
+        try {
+            Schema writerSchema = genericRecord.getSchema();
+            Schema readerSchema = SpecificData.get().getSchema(specificClass);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            GenericDatumWriter<GenericRecord> datumWriter = new GenericDatumWriter(writerSchema);
+            Encoder encoder = EncoderFactory.get().binaryEncoder(out, (BinaryEncoder)null);
+            datumWriter.write(genericRecord, encoder);
+            encoder.flush();
+            SpecificDatumReader<T> datumReader = new SpecificDatumReader(writerSchema, readerSchema);
+            Decoder decoder = DecoderFactory.get().binaryDecoder(out.toByteArray(), (BinaryDecoder)null);
+            return (T)(datumReader.read((Object)null, decoder));
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to convert GenericRecord to SpecificRecord", e);
+        }
+    }
+
+    public static GenericRecord convertSpecificToGeneric(SpecificRecord specificRecord) {
+        Schema schema = specificRecord.getSchema();
+        GenericRecord genericRecord = new GenericData.Record(schema);
+
+        for(Schema.Field field : schema.getFields()) {
+            Object value = specificRecord.get(field.pos());
+            genericRecord.put(field.name(), value);
+        }
+
+        return genericRecord;
+    }
+}
