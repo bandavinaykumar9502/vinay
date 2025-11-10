@@ -1,0 +1,87 @@
+environment: "dev"
+newrelic_env: "dev"
+
+service:
+  new_relic_options: "-javaagent:/opt/newrelic/newrelic.jar"
+  replica_count: 10
+  eks_cluster: "rdp-nonprod"
+  type: ClusterIP
+  java_debug_options: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005"
+
+  ScaledObject:
+    minReplicaCount: "10"
+    maxReplicaCount: "10"
+    bootstrapServers: "lkc-7k73j-4rm7l.us-east-2.aws.glb.confluent.cloud:9092"
+    topic: "dev.person.occurrence-matched.5"
+    consumerGroup: "person-data-services-registry-listener"
+    lagThreshold: "20000"
+    pollingInterval: "30"
+
+  image:
+    tag: ""
+    repository: "docker-dp-common-releases-virtual.rt.artifactory.tio.systems"
+    pull_policy: "Always"
+  logging_level: "INFO"
+
+  # Next 2 keys are used by service-role.yaml to grant access to dp AWS account
+  aws_account_number: "296075517832"
+  aws_iam_role: "dp-person-registry-occurrence-matched-listener-iam-role-dev"
+
+
+  # Next 2 keys are needed to expose REST API
+  port: 80
+  targetPort: 8080
+  protocol: TCP
+
+  management:
+    server_port: 9080
+    exposure_include: "bindings,health"
+
+  keda_sasl: "plaintext"
+  keda_tls: "enable"
+  kafka:
+    topic: "dev.person.occurrence-matched.5"
+    dlt_topic: "dev.person.occurrence-matched-dlt.1"
+    consumer_group_id: "person-data-services-registry-listener"
+#    to be removed starts
+    normalized_topic: "dev.person.occurrence-normalized.2"
+    normalized_group_id: "person-data-services-registry-normalized"
+    normalized_listener_enabled: "T"
+#    to be removed end
+  db:
+    url: "jdbc:postgresql://dp-person-aurora-limitless-test.cluster-crlplbnkb74f.us-east-2.rds.amazonaws.com:5432/person_registry?options=-c%20TimeZone=UTC&ApplicationName=dp-person-registry-occurrence-matched-listener"
+    env: "dev"
+
+
+  ingress:
+    enabled: true
+    port:
+      number: 80
+      name: http
+      protocol: HTTP
+    path: /
+
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4096Mi
+  requests:
+    cpu: 1000m
+    memory: 2048Mi
+
+kafka:
+  confluent:
+    bootstrap_server: "lkc-7k73j-4rm7l.us-east-2.aws.glb.confluent.cloud:9092"
+nodeSelector:
+  key: "karpenter.sh/capacity-type"
+
+podDisruptionBudget:
+  enabled: true
+  # Uncomment only one of the following when enabled is set to true. Do not set any of these values to zero or 100%, this will send kubernetes operator into an infinite loop
+  # maxUnavailable: "25%"
+  minAvailable: 2
+
+tolerations: []
+
+affinity: {}

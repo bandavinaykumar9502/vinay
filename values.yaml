@@ -1,0 +1,81 @@
+environment: ""
+newrelic_env: ""
+
+service:
+  new_relic_options: "-javaagent:/opt/newrelic/newrelic.jar"
+  replica_count: ""
+  eks_cluster: ""
+  type: ClusterIP
+  java_debug_options: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005"
+
+  ScaledObject:
+    minReplicaCount: ""
+    maxReplicaCount: ""
+    bootstrapServers: ""
+    topic: ""
+    consumerGroup: ""
+    lagThreshold: ""
+    pollingInterval: ""
+
+  image:
+    tag: ""
+    repository: "docker-dp-common-releases-virtual.rt.artifactory.tio.systems"
+    pull_policy: "Always"
+  logging_level: "INFO"
+
+  # Next 2 keys are used by service-role.yaml to grant access to dp AWS account
+  aws_account_number: ""
+  aws_iam_role: ""
+
+
+  # Next 2 keys are needed to expose REST API
+  port: 80
+  targetPort: 8080
+  protocol: TCP
+
+  management:
+    server_port: 9080
+    exposure_include: "bindings,health"
+
+  keda_sasl: "plaintext"
+  keda_tls: "enable"
+  kafka:
+    topic: ""
+    dlt_topic: ""
+    consumer_group_id: "person-data-services-registry-listener"
+  db:
+    url: ""
+
+
+  ingress:
+    enabled: true
+    port:
+      number: 80
+      name: http
+      protocol: HTTP
+    path: /
+
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4096Mi
+  requests:
+    cpu: 1000m
+    memory: 2048Mi
+
+kafka:
+  confluent:
+    bootstrap_server: ""
+nodeSelector:
+  key: "karpenter.sh/capacity-type"
+
+podDisruptionBudget:
+  enabled: true
+  # Uncomment only one of the following when enabled is set to true. Do not set any of these values to zero or 100%, this will send kubernetes operator into an infinite loop
+  # maxUnavailable: "25%"
+  minAvailable: 2
+
+tolerations: []
+
+affinity: {}
