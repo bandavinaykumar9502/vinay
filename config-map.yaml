@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{.Release.Name}}
+  namespace: {{.Release.Namespace}}
+  annotations:
+    'strategy.spinnaker.io/versioned': 'false'
+data:
+  environment: {{.Values.service.environment  | quote}}
+  SERVICE_LOGGING_LEVEL: {{.Values.service.logging_level}}
+  SERVICE_PORT:  {{ .Values.service.port | quote}}
+  MANAGEMENT_PORT: {{ .Values.service.management.server_port | quote}}
+  MANAGEMENT_ENDPOINTS_INCLUDE: {{ .Values.service.management.exposure_include}}
+  TOPIC_NAME: {{ .Values.service.kafka.topic }}
+  DLT_TOPIC_NAME: {{ .Values.service.kafka.dlt_topic }}
+  CONSUMER_GROUP_ID: {{ .Values.service.kafka.consumer_group_id}}
+#  to removed starts
+  NORMALIZED_TOPIC: {{ .Values.service.kafka.normalized_topic}}
+  NORMALIZED_GROUP_ID: {{ .Values.service.kafka.normalized_group_id}}
+#  to be removed ends
+  KAFKA_BROKERS: {{ .Values.kafka.confluent.bootstrap_server }}
+  DB_URL: {{ .Values.service.db.url }}
+  DB_ENV: {{ .Values.service.db.env }}
+  NORMALIZED_LISTENER_ENABLED: {{ .Values.service.kafka.normalized_listener_enabled }}

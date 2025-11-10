@@ -1,0 +1,123 @@
+# Required by default
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.service.replica_count }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
+        app_version: {{ .Values.service.image.tag | quote }}
+        es_index_name: {{ .Release.Name }}
+      annotations:
+        co.elastic.logs.{{ .Release.Name }}/enabled: "true"
+        co.elastic.logs/json.keys_under_root: "true"
+        co.elastic.logs/json.ignore_decoding_error: "true"
+        co.elastic.logs/json.message_key: message
+    spec:
+      serviceAccount: {{ .Release.Name }}
+      serviceAccountName: {{ .Release.Name }}
+      affinity:
+        # Node affinity to schedule pods on spot and on_demand instances based on availability
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              preference:
+                matchExpressions:
+                  - key: {{ (.Values.nodeSelector).key | default "eks.amazonaws.com/capacityType" }}
+                    operator: In
+                    values: ["spot","SPOT"]
+            - weight: 5
+              preference:
+                matchExpressions:
+                  - key: {{ (.Values.nodeSelector).key | default "eks.amazonaws.com/capacityType" }}
+                    operator: In
+                    values: ["on-demand","ON_DEMAND"]
+        # Pod anti affinity to schedule pods in different nodes
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - {{ .Release.Name }}
+              topologyKey: "kubernetes.io/hostname"
+      # Topology spread constraint to evenly distribute pods across availability zones
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: {{ .Release.Name }}
+      volumes:
+      - name: secrets-store-inline
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: {{ .Release.Name }}
+      imagePullSecrets:
+        - name: {{ .Release.Name }}-docker-secret
+      containers:
+        - name: {{ .Release.Name }}
+          volumeMounts:
+          - name: secrets-store-inline
+            mountPath: "/mnt/secrets-store"
+            readOnly: true
+          image: {{ .Values.service.image.repository }}/{{ .Release.Name }}{{ if .Values.service.image.tag }}:{{ end }}{{.Values.service.image.tag}}
+          imagePullPolicy: {{ .Values.service.image.pull_policy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: {{ .Values.service.management.server_port }}
+            initialDelaySeconds: 30
+            timeoutSeconds: 3
+            periodSeconds: 30
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: {{ .Values.service.management.server_port }}
+            initialDelaySeconds: 30
+            timeoutSeconds: 3
+            periodSeconds: 30
+          env:
+            - name: keda-sasl
+              value: {{.Values.service.keda_sasl}}
+            - name: keda-tls
+              value: {{.Values.service.keda_tls}}
+            - name: LOG_LEVEL
+              value: {{.Values.service.logging_level}}
+            - name: JAVA_DEBUG_OPTIONS
+              value: {{.Values.service.java_debug_options}}
+            - name: NEW_RELIC_OPTIONS
+              value: {{ .Values.service.new_relic_options }}
+            - name: NEW_RELIC_APP_NAME
+              value: {{ printf "%s-%s" .Release.Name .Values.newrelic_env }}
+          envFrom:  #get all environment data
+            - secretRef:  # for secrets defined in external-secret.yaml/secretDescriptor/data
+                name: {{ .Release.Name }}
+            - configMapRef:   # for variables defined in config-map.yaml/data
+                name: {{ .Release.Name }}
+          resources:
+            limits:
+              cpu: {{ .Values.resources.limits.cpu }}
+              memory: {{ .Values.resources.limits.memory }}
+            requests:
+              cpu: {{ .Values.resources.requests.cpu }}
+              memory: {{ .Values.resources.requests.memory }}

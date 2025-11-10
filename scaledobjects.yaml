@@ -1,0 +1,41 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  scaleTargetRef:
+    name: {{ .Release.Name }} # Name of the application/deployment to scale
+  minReplicaCount: {{ .Values.service.ScaledObject.minReplicaCount }}
+  maxReplicaCount: {{ .Values.service.ScaledObject.maxReplicaCount }}
+  pollingInterval: {{ .Values.service.ScaledObject.pollingInterval }}
+  fallback: # Optional. Section to specify fallback options
+    failureThreshold: 3                                # If KEDA failed to fetch consumer lag metric for 3 consecutive times
+    replicas: 5          # Fall back to 5 replicas
+  advanced: # Optional. Section to specify advanced options //
+    restoreToOriginalReplicaCount: true
+    horizontalPodAutoscalerConfig:
+      name: {{ .Release.Name }}
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 120      # require stable lag for 2m before scaling up
+          policies:
+            - type: Pods
+              value: 2                        # Scale up by 2 pods at most for 5 minute
+              periodSeconds: 300
+        scaleDown:
+          stabilizationWindowSeconds: 300     # require stable low lag for 5m before scaling down
+          selectPolicy: Min
+          policies:
+            - type: Pods
+              value: 1                       # Scale down by 1 pods at most
+              periodSeconds: 300
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: {{ .Values.service.ScaledObject.bootstrapServers }}
+        topic: {{ .Values.service.ScaledObject.topic }}
+        consumerGroup: {{ .Values.service.ScaledObject.consumerGroup }}
+        lagThreshold: "{{ .Values.service.ScaledObject.lagThreshold }}"
+      authenticationRef:
+        name: {{ .Release.Name }}
